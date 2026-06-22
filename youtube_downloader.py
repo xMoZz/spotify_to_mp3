@@ -52,6 +52,10 @@ def download_song(
 
     expected_file = os.path.join(output_dir, f"{sanitized}.mp3")
 
+    # Resume: skip if MP3 already exists
+    if os.path.isfile(expected_file):
+        return True
+
     for query in queries:
         search_string = f"ytsearch1:{query}"
 
@@ -67,6 +71,7 @@ def download_song(
                  "--default-search", "ytsearch",
                  "--ignore-errors",
                  "--quiet",
+                 "--extractor-args", "youtube:player_client=android,web",
                  search_string],
                 capture_output=True,
                 text=True,
@@ -75,6 +80,23 @@ def download_song(
 
             if result.returncode == 0 and os.path.isfile(expected_file):
                 return True
+
+            # Debug: print why it failed
+            label = f"{artist} - {title}" if artist else title
+            if result.returncode != 0:
+                err = result.stderr.strip()[:200] if result.stderr else "unknown error"
+                print(f"  [yt-dlp error] {label}: exit={result.returncode}, {err}")
+                if "javascript runtime" in err.lower() or "js runtime" in err.lower():
+                    print(f"     → Install deno: winget install deno  (or: npm install -g deno)")
+            elif not os.path.isfile(expected_file):
+                # File wasn't created - check what IS in the output dir
+                try:
+                    files = os.listdir(output_dir) if os.path.isdir(output_dir) else []
+                except Exception:
+                    files = []
+                similar = [f for f in files if sanitized[:20].lower() in f.lower()]
+                hint = f" (similar files: {similar[:3]})" if similar else ""
+                print(f"  [yt-dlp error] {label}: MP3 not found at {expected_file}{hint}")
 
         except subprocess.TimeoutExpired:
             continue

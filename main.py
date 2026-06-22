@@ -22,6 +22,7 @@ import argparse
 import os
 import sys
 import re
+import time
 from pathlib import Path
 
 from spotify_scraper import scrape_urls
@@ -128,65 +129,110 @@ Examples:
         for u in local_urls:
             print(f"    [SKIP] {u[:80]}...")
 
-    # === Step 1: Scrape Spotify ===
-    print(f"\n{'='*50}")
-    print("[STEP 1] Scraping Spotify track info")
-    print(f"{'='*50}")
-
-    tracks = scrape_urls(unique_track_urls, max_workers=args.workers)
-    valid_tracks = [t for t in tracks if t is not None]
-
-    if not valid_tracks:
-        print("\n[ERROR] Could not scrape any track info.")
-        sys.exit(1)
-
-    print(f"\n[TRACKS] Found tracks (first 5):")
-    for t in valid_tracks[:5]:
-        print(f"  - {t['artist']} - {t['title']}")
-    if len(valid_tracks) > 5:
-        print(f"  ... and {len(valid_tracks) - 5} more")
-
     # Output directory
     output_dir = args.out
     os.makedirs(output_dir, exist_ok=True)
 
-    # Save playlist file
+    # === Load existing playlist for resume ===
     playlist_path = os.path.join(output_dir, "playlist.txt")
-    with open(playlist_path, "w", encoding="utf-8") as f:
-        for t in valid_tracks:
-            f.write(f"{t['artist']} - {t['title']}\n")
-    print(f"\n[SAVED] Playlist saved: {playlist_path}")
+    existing_entries = set()
+    if os.path.isfile(playlist_path):
+        with open(playlist_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    existing_entries.add(line)
+        print(f"\n[RESUME] Loaded {len(existing_entries)} tracks from existing playlist")
 
-    if args.no_download:
-        print("\n[STOP] --no-download set. Done.")
-        return
+    # === Split into batches of 100 ===
+    batch_size = 100
+    all_urls = unique_track_urls
+    batches = [all_urls[i:i + batch_size] for i in range(0, len(all_urls), batch_size)]
+    total_new_this_run = 0
+    total_still_failed = 0
 
-    # === Step 2: YouTube Downloads ===
     print(f"\n{'='*50}")
-    print("[STEP 2] YouTube MP3 Downloads")
+    print(f"Processing {len(all_urls)} URLs in {len(batches)} batches of {batch_size}")
     print(f"{'='*50}")
 
-    successful, failed = download_all(
-        valid_tracks,
-        output_dir=output_dir,
-        max_workers=args.download_workers,
-    )
+    for batch_idx, batch_urls in enumerate(batches, 1):
+        print(f"\n{'='*50}")
+        print(f"[BATCH {batch_idx}/{len(batches)}] {len(batch_urls)} URLs")
+        print(f"{'='*50}")
+
+        # Scrape this batch (with auto-retry on rate-limit)
+        max_scrape_rounds = 5
+        scrape_round = 1
+        pending_urls = batch_urls
+        batch_tracks_accumulated = []
+
+        while scrape_round <= max_scrape_rounds and pending_urls:
+            if scrape_round > 1:
+                wait = 120 if not tracks else 60
+                print(f"\n{'='*50}")
+                print(f"[RATE-LIMIT] Round {scrape_round-1} got {len(tracks)}/{original_pending}.")
+                print(f"  Waiting {wait}s before retry ({scrape_round}/{max_scrape_rounds})...")
+                print(f"  Remaining in batch: {len(pending_urls)} URLs")
+                print(f"{'='*50}")
+                time.sleep(wait)
+
+            original_pending = len(pending_urls)
+            tracks, failed_urls = scrape_urls(pending_urls, max_workers=args.workers)
+
+            if tracks:
+                batch_tracks_accumulated.extend(tracks)
+
+            pending_urls = failed_urls
+            scrape_round += 1
+
+        if pending_urls:
+            total_still_failed += len(pending_urls)
+            print(f"\n  [WARN] {len(pending_urls)} URLs in batch {batch_idx} still failed after {max_scrape_rounds} rounds.")
+
+        # Merge batch tracks into playlist
+        new_in_batch = []
+        if batch_tracks_accumulated:
+            new_in_batch = [t for t in batch_tracks_accumulated
+                           if f"{t['artist']} - {t['title']}" not in existing_entries]
+            total_new_this_run += len(new_in_batch)
+            existing_entries.update(f"{t['artist']} - {t['title']}" for t in batch_tracks_accumulated)
+
+            # Save playlist
+            with open(playlist_path, "w", encoding="utf-8") as f:
+                for entry in sorted(existing_entries):
+                    f.write(entry + "\n")
+        print(f"\n[PLAYLIST] {len(existing_entries)} total (+{len(new_in_batch)} new from batch {batch_idx})")
+
+        # Download new tracks from this batch
+        if not args.no_download and new_in_batch:
+            print(f"\n{'='*50}")
+            print(f"[DOWNLOAD Batch {batch_idx}/{len(batches)}] {len(new_in_batch)} tracks")
+            print(f"{'='*50}")
+
+            successful, failed = download_all(
+                new_in_batch,
+                output_dir=output_dir,
+                max_workers=args.download_workers,
+            )
+            print(f"  -> {len(successful)}/{len(new_in_batch)} downloaded")
 
     # === Final Summary ===
     print(f"\n{'='*50}")
     print("[SUMMARY]")
     print(f"{'='*50}")
-    print(f"  Successful: {len(successful)}/{len(valid_tracks)}")
-    print(f"  Failed: {len(failed)}/{len(valid_tracks)}")
+    print(f"  Playlist: {len(existing_entries)} total tracks")
+    print(f"  New this run: {total_new_this_run}")
     print(f"  Output: {output_dir}")
 
-    if failed:
-        print(f"\n  Failed tracks:")
-        for t in failed:
-            print(f"    - {t['artist']} - {t['title']}")
-
-    if failed:
+    if total_still_failed:
+        print(f"\n  ⚠ {total_still_failed} URLs still not scraped after all batches.")
+        print(f"    Run again later — playlist resumes where it left off.")
         sys.exit(1)
+    elif args.no_download:
+        print("\n  [--no-download] Scraping only. Done.")
+        return
+    else:
+        print("\n  All done. ✓")
 
 
 if __name__ == "__main__":

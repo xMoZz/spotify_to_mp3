@@ -94,21 +94,24 @@ def fetch_track_info(track_id: str, timeout: int = 15, max_retries: int = 1) -> 
     return None
 
 
-def scrape_urls(urls: list[str], max_workers: int = 5) -> list[dict]:
+def scrape_urls(urls: list[str], max_workers: int = 5) -> tuple[list[dict], list[str]]:
     """
     Takes a list of Spotify URLs, extracts track IDs,
     scrapes artist + title in parallel, and returns results.
 
-    Returns: list of dicts with keys: track_id, artist, title
-             (or None for failed tracks)
+    Returns: (successful_tracks, failed_urls)
+             successful_tracks: list of dicts with keys: track_id, artist, title
+             failed_urls: list of original URLs that could not be scraped
     """
-    # Extract track IDs
+    # Extract track IDs, keep mapping back to original URL
     track_ids = []
+    url_for_track_id = {}
     skipped = []
     for url in urls:
         tid = extract_track_id(url)
         if tid and tid not in track_ids:
             track_ids.append(tid)
+            url_for_track_id[tid] = url
         elif not tid:
             skipped.append(url)
 
@@ -116,7 +119,7 @@ def scrape_urls(urls: list[str], max_workers: int = 5) -> list[dict]:
         print(f"  [SKIP] {len(skipped)} invalid/local URLs skipped")
 
     if not track_ids:
-        return []
+        return [], []
 
     # Parallel scraping (lower concurrency due to rate limits)
     results = [None] * len(track_ids)
@@ -134,11 +137,21 @@ def scrape_urls(urls: list[str], max_workers: int = 5) -> list[dict]:
                     results[idx] = None
                 pbar.update(1)
 
-    # Stats
-    successful = [r for r in results if r is not None]
-    print(f"  [OK] {len(successful)}/{len(track_ids)} tracks scraped successfully")
-    if successful:
-        first = successful[0]
-        print(f"     First: {first['artist']} - {first['title']}")
+    # Separate successful and failed
+    successful_tracks = []
+    failed_urls = []
+    for i, tid in enumerate(track_ids):
+        if results[i] is not None:
+            successful_tracks.append(results[i])
+        else:
+            failed_urls.append(url_for_track_id[tid])
 
-    return results
+    # Stats
+    print(f"  [OK] {len(successful_tracks)}/{len(track_ids)} tracks scraped successfully")
+    if successful_tracks:
+        first = successful_tracks[0]
+        print(f"     First: {first['artist']} - {first['title']}")
+    if failed_urls:
+        print(f"  [RATE-LIMIT] {len(failed_urls)} tracks failed (rate-limited or unavailable)")
+
+    return successful_tracks, failed_urls
