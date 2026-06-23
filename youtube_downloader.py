@@ -71,7 +71,6 @@ def download_song(
                  "--default-search", "ytsearch",
                  "--ignore-errors",
                  "--quiet",
-                 "--extractor-args", "youtube:player_client=android,web",
                  search_string],
                 capture_output=True,
                 text=True,
