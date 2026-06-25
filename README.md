@@ -74,6 +74,8 @@ A window will open where you can:
 3. Click "Start Download"
 4. Watch the live log output
 
+> **Tip:** In the Spotify desktop app (PC), you can hold `Shift` to select multiple songs in a playlist. Press `Ctrl + C` to copy all their links at once — then paste them directly into the text box or `playlist.txt`.
+
 ## Output Structure
 
 ```
